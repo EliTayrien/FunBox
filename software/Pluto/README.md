@@ -2,7 +2,7 @@
 
 Pluto is a wacky dual/stereo looper for endless experimentation. Each looper features a variable speed control, smooth or stepped,
 and several effects and loop modes. Pluto runs at 96kHz instead of 48kHz, in order to have the best quality when slowing down loops,
-but don't worry, lots of aliasing/artifacts are present when strethching audio!
+but don't worry, lots of aliasing/artifacts are present when stretching audio!
 
 Loops are recorded at the current speed setting. For example, if the speed of Loop A is at 2x and you record a loop, it will sound normal, but turning the speed 
 knob down to 1x will play your loop at half speed (and half the samplerate). 
