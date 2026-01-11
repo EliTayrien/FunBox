@@ -13,6 +13,7 @@ OPT = -O1
 # Sources
 CPP_SOURCES = ganymede.cpp
 CPP_SOURCES += ../../mc_common/mc_common.cpp
+CPP_SOURCES += ../../mc_common/timed_sequence.cpp
 
 # Library Locations
 LIBDAISY_DIR = ../../libDaisy
