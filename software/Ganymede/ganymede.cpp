@@ -30,6 +30,12 @@ enum class GanyMode {
     Playback
 };
 
+enum class FilterMode {
+    Volume,  // Direct volume multiplication
+    LPF,     // Low-pass filter using LadderFilter
+    HPF,     // High-pass filter using LadderFilter
+};
+
 // Declare a local daisy_petal for hardware access
 DaisyPetal hw;
 Parameter param1, param2, param3, param4, param5, param6;
@@ -37,46 +43,71 @@ Parameter param1, param2, param3, param4, param5, param6;
 GanyMode currentMode = GanyMode::Bypass;
 TimedSequenceCreator sequenceCreator;
 TimedSequence playbackSequence;
+AdEnv modulationEnvelope;
+
+FilterMode filterMode = FilterMode::Volume;
+bool inverseDuckingMode = false;
+LadderFilter filterL, filterR;
+
+// Helper function to map envelope value (0-1) to frequency (Hz) with exponential curve
+// This provides more musical control - lower values have finer resolution
+inline float envelopeToFrequency(float envelope, float minFreq = 20.0f, float maxFreq = 20000.0f) {
+    // Exponential mapping: envelope^2 gives more control in lower frequencies
+    float normalized = envelope * envelope;  // Square for exponential curve
+    return minFreq + normalized * (maxFreq - minFreq);
+}
 
 bool            pswitch1[2], pswitch2[2], pswitch3[2], pdip[4];
 int             switch1[2], switch2[2], switch3[2], dip[4];
 
 Led led1, led2;
 
-void updateSwitch1() // left=, center=, right=
-{
-    if (pswitch1[0] == true) {  // left
-
-    } else if (pswitch1[1] == true) {  // right
-
-    } else {   // center
-
-    }      
+enum class SwitchPosition {
+    Left,
+    Center,
+    Right
+};
+SwitchPosition getSwitchPosition(bool pswitch[2]) {
+    if (pswitch[0] == true) {
+        return SwitchPosition::Left;
+    } else if (pswitch[1] == true) {
+        return SwitchPosition::Right;
+    } else {
+        return SwitchPosition::Center;
+    }
 }
 
-void updateSwitch2() // left=, center=, right=
+void updateSwitch1() // left=Volume, center=HPF, right=LPF
 {
-    if (pswitch2[0] == true) {  // left
-
-    } else if (pswitch2[1] == true) {  // right
-
-
-    } else {   // center
-
-    }    
+    SwitchPosition position = getSwitchPosition(pswitch1);
+    switch (position) {
+        case SwitchPosition::Left:
+            filterMode = FilterMode::Volume;
+            break;
+        case SwitchPosition::Center:
+            filterMode = FilterMode::HPF;
+            // Set filter mode to high-pass when switching to HPF
+            filterL.SetFilterMode(LadderFilter::FilterMode::HP24);
+            filterR.SetFilterMode(LadderFilter::FilterMode::HP24);
+            break;
+        case SwitchPosition::Right:
+            filterMode = FilterMode::LPF;
+            // Set filter mode to low-pass when switching to LPF
+            filterL.SetFilterMode(LadderFilter::FilterMode::LP24);
+            filterR.SetFilterMode(LadderFilter::FilterMode::LP24);
+            break;
+    }
 }
 
+void updateSwitch2() // left=normal, center=normal, right=inverse
+{
+    inverseDuckingMode = (getSwitchPosition(pswitch2) == SwitchPosition::Right);
+}
 
 void updateSwitch3() // left=, center=, right=
 {
-    if (pswitch3[0] == true) {  // left
-
-    } else if (pswitch3[1] == true) {  // right
-
-
-    } else {   // center
-
-    }    
+    auto position = getSwitchPosition(pswitch3);
+    (void)position;
 }
 
 
@@ -158,40 +189,25 @@ void UpdateButtons()
 void UpdateSwitches()
 {
     // Detect any changes in switch positions (3 On-Off-On switches and Dip switches)
-
-    // 3-way Switch 1
-    bool changed1 = false;
-    for(int i=0; i<2; i++) {
-        if (hw.switches[switch1[i]].Pressed() != pswitch1[i]) {
-            pswitch1[i] = hw.switches[switch1[i]].Pressed();
-            changed1 = true;
+    int* switches[] = {switch1, switch2, switch3};
+    bool* pswitches[] = {pswitch1, pswitch2, pswitch3};
+    for (int switchIndex = 0; switchIndex < 3; switchIndex++) {
+        auto switchArray = switches[switchIndex];
+        bool changed = false;
+        for (int i = 0; i < 2; i++) {
+            if (hw.switches[switchArray[i]].Pressed() != pswitches[switchIndex][i]) {
+                pswitches[switchIndex][i] = hw.switches[switchArray[i]].Pressed();
+                changed = true;
+            }
+        }
+        if (changed && switchIndex == 0 ) {
+            updateSwitch1();
+        } else if (changed && switchIndex == 1) {
+            updateSwitch2();
+        } else if (changed && switchIndex == 2) {
+            updateSwitch3();
         }
     }
-    if (changed1) 
-        updateSwitch1();
-    
-
-    // 3-way Switch 2
-    bool changed2 = false;
-    for(int i=0; i<2; i++) {
-        if (hw.switches[switch2[i]].Pressed() != pswitch2[i]) {
-            pswitch2[i] = hw.switches[switch2[i]].Pressed();
-            changed2 = true;
-        }
-    }
-    if (changed2) 
-        updateSwitch2();
-
-    // 3-way Switch 3
-    bool changed3 = false;
-    for(int i=0; i<2; i++) {
-        if (hw.switches[switch3[i]].Pressed() != pswitch3[i]) {
-            pswitch3[i] = hw.switches[switch3[i]].Pressed();
-            changed3 = true;
-        }
-    }
-    if (changed3) 
-        updateSwitch3();
 
     // Dip switches
     for(int i=0; i<4; i++) {
@@ -229,49 +245,57 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
     // TODO: param2 adjusts speed
     // TODO: param3 trims the end of the sequence
 
-    // TODO: param4 adjusts depth of modulation (i.e. does volume drop to 0%, 80%, or somewhere in between?)
-    // TODO: param5 adjusts attack of modulation (how sharply does volume drop? does it hit full modulation immediately after an event? )
-    // TODO: param6 adjusts release of modulation (how quickly does volume return to normal?)
-    // use daisysp::AdEnv to implement this.
-    // Something like:
-    // daisysp::AdEnv modulationEnvelope;
-    // modulationEnvelope.Init(hw.AudioSampleRate());
-    // modulationEnvelope.SetTime(ADENV_SEG_ATTACK, vparam5);
-    // modulationEnvelope.SetTime(ADENV_SEG_DECAY, vparam6);
-    // modulationEnvelope.SetMax(1.0f);
-    // modulationEnvelope.SetMin(0.0f);
-    // modulationEnvelope.SetCurve(0);
+    // param4 adjusts depth of modulation (0-1: 0 = no ducking, 1 = full ducking)
+    // param5 adjusts attack time (0-1 mapped to 0.001-0.1 seconds)
+    // param6 adjusts release/decay time (0-1 mapped to 0.001-0.5 seconds)
+    
+    // Map parameters to envelope settings
+    float depth = vparam4;  // 0-1 range
+    float attackTime = 0.001f + vparam5 * 0.099f;  // 0.001 to 0.1 seconds
+    float decayTime = 0.001f + vparam6 * 0.499f;   // 0.001 to 0.5 seconds
+    
+    // Configure envelope
+    // Envelope represents ducking amount: 0 = no ducking, depth = full ducking
+    // Volume will be 1 - envelope
+    // Envelope internally: attack goes from retrig_val_ to 1.0, decay goes from 1.0 to 0.0
+    // We want: attack goes from 0 to depth, decay goes from depth to 0
+    // So: max_ = depth (when internal=1.0), min_ = 0.0 (when internal=0.0)
+    modulationEnvelope.SetMax(depth);  // Full ducking (envelope = depth when internal=1.0)
+    modulationEnvelope.SetMin(0.0f);   // No ducking (envelope = 0.0 when internal=0.0)
+    modulationEnvelope.SetTime(ADENV_SEG_ATTACK, attackTime);
+    modulationEnvelope.SetTime(ADENV_SEG_DECAY, decayTime);
+    modulationEnvelope.SetCurve(0);
 
-    // TODO: switch 1 should switch between different filters (volume, LPF, HPF, Moog Ladder?).
-    // TODO: switch 2 should switch between ducking source:
+    // TODO: switch 3 (or should this be on a dip switch?)should switch between ducking source:
     //       midi note on-offs w/ attack and decay, 
     //       sequence, 
     //       or a simple tap tempo.
-    // TODO: switch 3 should switch between ducking mode: normal or inverse
 
     // TODO: Remove these once we have actual functionality
     (void)vparam1;
     (void)vparam2;
     (void)vparam3;
-    (void)vparam4;
-    (void)vparam5;
-    (void)vparam6;
 
-    // Update timed sequence if in playback mode
-    bool shouldDuck = false;
+    // Update timed sequence if in playback mode and trigger envelope on events
     if (currentMode == GanyMode::Playback && playbackSequence.HasStarted()) {
         UpdateResult result = playbackSequence.Update();
         
-        // Duck if a sequence event is (or was) within 100ms
-        // Duck if event just fired (within 100ms ago) or is about to fire (within 100ms)
-        // Note: millisUntilNextFire == 0 means we're at an event right now, so we should duck
-        if (result.millisSinceLastFired <= 100 || result.millisUntilNextFire <= 100) {
-            shouldDuck = true;
+        // Trigger envelope when sequence event fires
+        if (result.anyFired) {
+            modulationEnvelope.Trigger();
         }
     }
 
     for(size_t i = 0; i < size; i++)
     {
+        float signalEnvelope = modulationEnvelope.Process();
+        if (!modulationEnvelope.IsRunning()) {
+            signalEnvelope = 0.0f;
+        }
+        if (inverseDuckingMode) {
+            signalEnvelope = 1.0f - signalEnvelope;
+        }
+
         // Process your signal here
         if(currentMode != GanyMode::Playback)
         {
@@ -283,18 +307,39 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
             float inL = in[0][i];
             float inR = in[1][i];
 
-            // Duck audio to zero if sequence event is within 100ms
-            float duckLevel = shouldDuck ? 0.0f : 1.0f;
+            // Process signal based on filter mode
+            float processedL = inL;
+            float processedR = inR;
+            
+            if (filterMode == FilterMode::LPF) {
+                // Apply low-pass filter with envelope-controlled cutoff
+                // signalEnvelope: 0 = low cutoff (more filtering), 1 = high cutoff (less filtering)
+                float cutoffFreq = envelopeToFrequency(signalEnvelope);
+                filterL.SetFreq(cutoffFreq);
+                filterR.SetFreq(cutoffFreq);
+                processedL = filterL.Process(inL);
+                processedR = filterR.Process(inR);
+            } else if (filterMode == FilterMode::HPF) {
+                // Apply high-pass filter with envelope-controlled cutoff
+                // signalEnvelope: 0 = low cutoff (more filtering), 1 = high cutoff (less filtering)
+                float cutoffFreq = envelopeToFrequency(signalEnvelope);
+                filterL.SetFreq(cutoffFreq);
+                filterR.SetFreq(cutoffFreq);
+                processedL = filterL.Process(inL);
+                processedR = filterR.Process(inR);
+            } else if (filterMode == FilterMode::Volume) {
+                // Direct volume multiplication
+                processedL = inL * signalEnvelope;
+                processedR = inR * signalEnvelope;
+            }
 
-            // Process your signal here
             // Final mix
             if (pdip[0] == false) {// Mono
-                out[0][i] = inL * duckLevel;
-                out[1][i] = inL * duckLevel;
-
+                out[0][i] = processedL;
+                out[1][i] = processedL;
             } else { // Stereo
-                out[0][i] = inL * duckLevel;
-                out[1][i] = inR * duckLevel;
+                out[0][i] = processedL;
+                out[1][i] = processedR;
             }
         }
     }
@@ -342,6 +387,25 @@ int main(void)
 
     led2.Init(hw.seed.GetPin(Funbox::LED_2),false);
     led2.Update();
+
+    // Initialize modulation envelope
+    modulationEnvelope.Init(hw.AudioSampleRate());
+    modulationEnvelope.SetMax(0.0f);  // Will be set by parameters in audio callback
+    modulationEnvelope.SetMin(0.0f);  // No ducking (envelope = 0.0)
+    modulationEnvelope.SetTime(ADENV_SEG_ATTACK, 0.01f);
+    modulationEnvelope.SetTime(ADENV_SEG_DECAY, 0.1f);
+    modulationEnvelope.SetCurve(0);
+
+    // Initialize filters
+    filterL.Init(hw.AudioSampleRate());
+    filterL.SetFilterMode(LadderFilter::FilterMode::LP24);
+    filterL.SetFreq(5000.0f);  // Default cutoff frequency
+    filterL.SetRes(0.2f);      // Low resonance
+    
+    filterR.Init(hw.AudioSampleRate());
+    filterR.SetFilterMode(LadderFilter::FilterMode::LP24);
+    filterR.SetFreq(5000.0f);  // Default cutoff frequency
+    filterR.SetRes(0.2f);      // Low resonance
 
     hw.StartAdc();
     hw.StartAudio(AudioCallback);
