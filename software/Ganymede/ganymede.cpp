@@ -26,7 +26,7 @@ uint32_t millis() {
 
 enum class GanyMode {
     Bypass,
-    Recording,
+    RecordingSequence,
     Playback
 };
 
@@ -35,6 +35,20 @@ enum class FilterMode {
     LPF,     // Low-pass filter using LadderFilter
     HPF,     // High-pass filter using LadderFilter
 };
+
+enum class EventSource {
+    TapSequence,
+    MIDI,
+    // TODO: Tap Tempo
+};
+EventSource eventSource = EventSource::TapSequence;
+ 
+constexpr float MIN_ATTACK_TIME = 0.01f;
+constexpr float MAX_ATTACK_TIME = 0.5f;
+constexpr float MIN_DECAY_TIME = 0.01f;
+constexpr float MAX_DECAY_TIME = 1.5f;
+
+constexpr uint32_t MIN_SEQUENCE_DURATION = 1000;
 
 // Declare a local daisy_petal for hardware access
 DaisyPetal hw;
@@ -107,82 +121,79 @@ void updateSwitch2() // left=normal, center=normal, right=inverse
 void updateSwitch3() // left=, center=, right=
 {
     auto position = getSwitchPosition(pswitch3);
-    (void)position;
+    if (position == SwitchPosition::Left) {
+        eventSource = EventSource::MIDI;
+    } else {
+        eventSource = EventSource::TapSequence;
+    }
 }
 
+uint32_t recordingStartTime = 0;
+float signalEnvelope = 0.0f;
+
+void startRecordingSequence() {
+    currentMode = GanyMode::RecordingSequence;
+    recordingStartTime = millis();
+    sequenceCreator.StartRecording();
+    led1.Set(1.0f);  // LED1 indicates recording
+    led2.Set(0.0f);
+    hw.seed.PrintLine("Mode: RecordingSequence");
+}
+
+void stopRecordingSequence() {
+    // Just released: stop recording
+    playbackSequence = sequenceCreator.StopRecording();
+    uint32_t recordingDuration = millis() - recordingStartTime;
+    recordingStartTime = 0; // Reset
+    
+    if (recordingDuration >= MIN_SEQUENCE_DURATION) {
+        currentMode = GanyMode::Playback;
+        playbackSequence.Start(true);
+        hw.seed.PrintLine("Mode: Playback");
+    } else {
+        // Sequence too short - discard and return to bypass
+        playbackSequence.Reset();
+        currentMode = GanyMode::Bypass;
+        hw.seed.PrintLine("Mode: Bypass (sequence too short)");
+    }
+}
+
+constexpr uint32_t TURN_OFF_LED2_DELAY_MS = 100;
+Timer turnOffLED2;
 
 void UpdateButtons()
-{
-    static uint32_t recordingStartTime = 0;
-    static bool leftFootswitchWasPressed = false;
-    
-    bool leftFootswitchPressed = hw.switches[Funbox::FOOTSWITCH_1].Pressed();
-    bool rightFootswitchPressed = hw.switches[Funbox::FOOTSWITCH_2].Pressed();
-    
-    // Left footswitch: start/stop recording
-    if (leftFootswitchPressed && !leftFootswitchWasPressed) {
-        // Just pressed: start recording
-        if (currentMode == GanyMode::Bypass || currentMode == GanyMode::Playback) {
-            currentMode = GanyMode::Recording;
-            recordingStartTime = millis();
-            sequenceCreator.StartRecording();
-            led1.Set(1.0f);  // LED1 indicates recording
-            led2.Set(0.0f);
+{   
+    if (eventSource == EventSource::MIDI && hw.switches[Funbox::FOOTSWITCH_1].RisingEdge()) {
+        currentMode = currentMode == GanyMode::Bypass ? GanyMode::Playback : GanyMode::Bypass;
+    }
+
+    if (eventSource == EventSource::TapSequence) {
+        // Left footswitch: start/stop recording
+        if (hw.switches[Funbox::FOOTSWITCH_1].RisingEdge() && currentMode != GanyMode::RecordingSequence) {
+            startRecordingSequence();
+        } else if (hw.switches[Funbox::FOOTSWITCH_1].FallingEdge() && currentMode == GanyMode::RecordingSequence) {
+            stopRecordingSequence();
         }
-    } else if (!leftFootswitchPressed && leftFootswitchWasPressed) {
-        // Just released: stop recording
-        if (currentMode == GanyMode::Recording) {
-            playbackSequence = sequenceCreator.StopRecording();
-            uint32_t recordingDuration = millis() - recordingStartTime;
-            recordingStartTime = 0; // Reset
-            
-            // Check if sequence duration is >= 1 second (1000ms)
-            if (recordingDuration >= 1000) {
-                // Sequence is valid - start playback
-                currentMode = GanyMode::Playback;
-                playbackSequence.Start(true); // Start in looping mode
-                led1.Set(0.5f);  // Dim LED1 to indicate playback
-            } else {
-                // Sequence too short - discard and return to bypass
+
+        // Right footswitch: add sequence point (recording) or cancel playback
+        if (hw.switches[Funbox::FOOTSWITCH_2].FallingEdge()) {
+            // Just released (tapped)
+            if (currentMode == GanyMode::RecordingSequence && recordingStartTime > 0) {
+                // Add a sequence point at current recording time
+                uint32_t elapsedFromStart = millis() - recordingStartTime;
+                sequenceCreator.AddSequencePoint(elapsedFromStart);
+                // Flash LED2 to indicate point added
+                turnOffLED2.reset();
+                turnOffLED2.start(TURN_OFF_LED2_DELAY_MS);
+                hw.seed.PrintLine("Point added");
+            } else if (currentMode == GanyMode::Playback) {
+                // Cancel playback and return to bypass
                 playbackSequence.Reset();
                 currentMode = GanyMode::Bypass;
-                led1.Set(0.0f);
+                hw.seed.PrintLine("Mode: Bypass (playback cancelled)");
             }
         }
     }
-    leftFootswitchWasPressed = leftFootswitchPressed;
-    
-    // Right footswitch: add sequence point (recording) or cancel playback
-    static bool rightFootswitchWasPressed = false;
-    static uint32_t led2FlashTime = 0;
-    if (!rightFootswitchPressed && rightFootswitchWasPressed) {
-        // Just released (tapped)
-        if (currentMode == GanyMode::Recording && recordingStartTime > 0) {
-            // Add a sequence point at current recording time
-            uint32_t elapsedFromStart = millis() - recordingStartTime;
-            sequenceCreator.AddSequencePoint(elapsedFromStart);
-            // Flash LED2 to indicate point added
-            led2.Set(1.0f);
-            led2FlashTime = millis();
-        } else if (currentMode == GanyMode::Playback) {
-            // Cancel playback and return to bypass
-            playbackSequence.Reset();
-            currentMode = GanyMode::Bypass;
-            led1.Set(0.0f);
-            led2.Set(0.0f);
-            led2FlashTime = 0;
-        }
-    }
-    rightFootswitchWasPressed = rightFootswitchPressed;
-    
-    // Turn off LED2 flash after 100ms
-    if (led2FlashTime > 0 && millis() - led2FlashTime > 100) {
-        led2.Set(0.0f);
-        led2FlashTime = 0;
-    }
-
-    led1.Update();
-    led2.Update();
 }
 
 
@@ -216,79 +227,17 @@ void UpdateSwitches()
             // Action for dipswitches handled in audio callback
         }
     }
-
 }
-
-
 
 // This runs at a fixed rate, to prepare audio samples
 static void AudioCallback(AudioHandle::InputBuffer  in,
                           AudioHandle::OutputBuffer out,
                           size_t                    size)
 {
-    //hw.ProcessAllControls();
-    hw.ProcessAnalogControls();
-    hw.ProcessDigitalControls();
-
-    UpdateButtons();
-    UpdateSwitches();
-
-    float vparam1 = param1.Process();
-    float vparam2 = param2.Process(); 
-    float vparam3 = param3.Process();
-
-    float vparam4 = param4.Process();
-    float vparam5 = param5.Process();
-    float vparam6 = param6.Process();
-
-    // TODO: param1 should trim the start of the sequence
-    // TODO: param2 adjusts speed
-    // TODO: param3 trims the end of the sequence
-
-    // param4 adjusts depth of modulation (0-1: 0 = no ducking, 1 = full ducking)
-    // param5 adjusts attack time (0-1 mapped to 0.001-0.1 seconds)
-    // param6 adjusts release/decay time (0-1 mapped to 0.001-0.5 seconds)
-    
-    // Map parameters to envelope settings
-    float depth = vparam4;  // 0-1 range
-    float attackTime = 0.001f + vparam5 * 0.099f;  // 0.001 to 0.1 seconds
-    float decayTime = 0.001f + vparam6 * 0.499f;   // 0.001 to 0.5 seconds
-    
-    // Configure envelope
-    // Envelope represents ducking amount: 0 = no ducking, depth = full ducking
-    // Volume will be 1 - envelope
-    // Envelope internally: attack goes from retrig_val_ to 1.0, decay goes from 1.0 to 0.0
-    // We want: attack goes from 0 to depth, decay goes from depth to 0
-    // So: max_ = depth (when internal=1.0), min_ = 0.0 (when internal=0.0)
-    modulationEnvelope.SetMax(depth);  // Full ducking (envelope = depth when internal=1.0)
-    modulationEnvelope.SetMin(0.0f);   // No ducking (envelope = 0.0 when internal=0.0)
-    modulationEnvelope.SetTime(ADENV_SEG_ATTACK, attackTime);
-    modulationEnvelope.SetTime(ADENV_SEG_DECAY, decayTime);
-    modulationEnvelope.SetCurve(0);
-
-    // TODO: switch 3 (or should this be on a dip switch?)should switch between ducking source:
-    //       midi note on-offs w/ attack and decay, 
-    //       sequence, 
-    //       or a simple tap tempo.
-
-    // TODO: Remove these once we have actual functionality
-    (void)vparam1;
-    (void)vparam2;
-    (void)vparam3;
-
-    // Update timed sequence if in playback mode and trigger envelope on events
-    if (currentMode == GanyMode::Playback && playbackSequence.HasStarted()) {
-        UpdateResult result = playbackSequence.Update();
-        
-        // Trigger envelope when sequence event fires
-        if (result.anyFired) {
-            modulationEnvelope.Trigger();
-        }
-    }
 
     for(size_t i = 0; i < size; i++)
     {
-        float signalEnvelope = modulationEnvelope.Process();
+        signalEnvelope = modulationEnvelope.Process();
         if (!modulationEnvelope.IsRunning()) {
             signalEnvelope = 0.0f;
         }
@@ -303,14 +252,14 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
             out[1][i] = in[1][i];
         }
         else
-        {   
+        {
             float inL = in[0][i];
             float inR = in[1][i];
 
             // Process signal based on filter mode
             float processedL = inL;
             float processedR = inR;
-            
+
             if (filterMode == FilterMode::LPF) {
                 // Apply low-pass filter with envelope-controlled cutoff
                 // signalEnvelope: 0 = low cutoff (more filtering), 1 = high cutoff (less filtering)
@@ -334,7 +283,7 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
             }
 
             // Final mix
-            if (pdip[0] == false) {// Mono
+            if (pdip[0] == false) { // Mono
                 out[0][i] = processedL;
                 out[1][i] = processedL;
             } else { // Stereo
@@ -344,13 +293,52 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
         }
     }
 }
-          
+
+void UpdateEnvelope(float modulationDepth, float normalizedAttackRate, float normalizedDecayRate) {
+    
+    modulationEnvelope.SetMax(modulationDepth);
+    modulationEnvelope.SetMin(0.0f);
+    modulationEnvelope.SetTime(ADENV_SEG_ATTACK, 
+        map<float>(normalizedAttackRate, 0.0f, 1.0f, MIN_ATTACK_TIME, MAX_ATTACK_TIME));
+    modulationEnvelope.SetTime(ADENV_SEG_DECAY, 
+        map<float>(normalizedDecayRate, 0.0f, 1.0f, MIN_DECAY_TIME, MAX_DECAY_TIME));
+    modulationEnvelope.SetCurve(0);
+
+    // Process MIDI messages and check for Note On on channel 1
+    bool noteOnMessageReceived = false;
+    hw.midi.Listen();
+    while(hw.midi.HasEvents())
+    {
+        MidiEvent m = hw.midi.PopEvent();
+        // Check for MIDI channel 1 (channel 0 in 0-indexed) and non-zero velocity
+        // This is to avoid Max/MSP Note outs for now..
+        if(m.type == NoteOn && m.channel == 0 && m.data[1] != 0)
+        {
+            noteOnMessageReceived = true;
+        }
+    }
+
+    bool playbackSequenceFired = false;
+    if (playbackSequence.HasStarted()) {
+        auto result = playbackSequence.Update();
+        playbackSequenceFired = result.anyFired;
+    }
+
+    bool triggerForSequence = eventSource == EventSource::TapSequence && playbackSequenceFired;
+    bool triggerForMidi = eventSource == EventSource::MIDI && noteOnMessageReceived;
+    if (currentMode == GanyMode::Playback && (triggerForSequence || triggerForMidi)) {
+        modulationEnvelope.Trigger();
+    }
+}
 
 int main(void)
 {
     hw.Init();
-
-    hw.SetAudioBlockSize(4); 
+    hw.seed.StartLog(false);
+    hw.seed.PrintLine("Starting Ganymede");
+    
+    hw.SetAudioBlockSize(48); 
+    float samplerate = hw.AudioSampleRate();
 
     switch1[0]= Funbox::SWITCH_1_LEFT;
     switch1[1]= Funbox::SWITCH_1_RIGHT;
@@ -381,37 +369,73 @@ int main(void)
     param5.Init(hw.knob[Funbox::KNOB_5], 0.0f, 1.0f, Parameter::LINEAR);
     param6.Init(hw.knob[Funbox::KNOB_6], 0.0f, 1.0f, Parameter::LINEAR); 
 
-    // Init the LEDs and set activate bypass
+
     led1.Init(hw.seed.GetPin(Funbox::LED_1),false);
+    led1.Set(0.0f);
     led1.Update();
 
     led2.Init(hw.seed.GetPin(Funbox::LED_2),false);
+    led2.Set(0.0f);
     led2.Update();
 
     // Initialize modulation envelope
-    modulationEnvelope.Init(hw.AudioSampleRate());
-    modulationEnvelope.SetMax(0.0f);  // Will be set by parameters in audio callback
-    modulationEnvelope.SetMin(0.0f);  // No ducking (envelope = 0.0)
+    modulationEnvelope.Init(samplerate);
+    modulationEnvelope.SetMax(1.0f);
+    modulationEnvelope.SetMin(0.0f);
     modulationEnvelope.SetTime(ADENV_SEG_ATTACK, 0.01f);
     modulationEnvelope.SetTime(ADENV_SEG_DECAY, 0.1f);
     modulationEnvelope.SetCurve(0);
 
     // Initialize filters
-    filterL.Init(hw.AudioSampleRate());
+    filterL.Init(samplerate);
     filterL.SetFilterMode(LadderFilter::FilterMode::LP24);
     filterL.SetFreq(5000.0f);  // Default cutoff frequency
     filterL.SetRes(0.2f);      // Low resonance
     
-    filterR.Init(hw.AudioSampleRate());
+    filterR.Init(samplerate);
     filterR.SetFilterMode(LadderFilter::FilterMode::LP24);
     filterR.SetFreq(5000.0f);  // Default cutoff frequency
     filterR.SetRes(0.2f);      // Low resonance
 
+    hw.InitMidi();
+    hw.midi.StartReceive();
+
     hw.StartAdc();
     hw.StartAudio(AudioCallback);
+    
     while(1)
     {
-        // Do Stuff Infinitely Here
+        hw.ProcessAllControls();
+
+        UpdateButtons();
+        UpdateSwitches();
+
+        float vparam1 = param1.Process();
+        float vparam2 = param2.Process(); 
+        float vparam3 = param3.Process();
+
+        // TODO: param1 should trim the start of the sequence
+        // TODO: param2 adjusts speed
+        // TODO: param3 trims the end of the sequence
+        (void)vparam1;
+        (void)vparam2;
+        (void)vparam3;
+        
+        UpdateEnvelope(param4.Process(), param5.Process(), param6.Process());
+
+        if (currentMode == GanyMode::Bypass) {
+            led1.Set(0.0f);
+            led2.Set(0.0f);
+        } else if (currentMode == GanyMode::RecordingSequence) {
+            led1.Set(1.0f);
+            led2.Set(turnOffLED2.isRunning() ? 1.0f : 0.0f);
+        } else if (currentMode == GanyMode::Playback) {
+            led1.Set(0.5f);
+            led2.Set(signalEnvelope);
+        }
+        led1.Update();
+        led2.Update();
+
         System::Delay(10);
     }
 }
