@@ -3,6 +3,22 @@ namespace funbox
 	class Funbox
 	{
 		public:
+
+		enum SwitchPosition {
+			Left,
+			Center,
+			Right
+		};
+
+		static inline SwitchPosition GetSwitchPosition(const bool pswitch[2]) {
+			if (pswitch[0] == true) {
+				return SwitchPosition::Left;
+			} else if (pswitch[1] == true) {
+				return SwitchPosition::Right;
+			} else {
+				return SwitchPosition::Center;
+			}
+		}
 			enum Sw
 			{
 				FOOTSWITCH_1 = 0,

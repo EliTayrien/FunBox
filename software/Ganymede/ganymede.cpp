@@ -76,35 +76,20 @@ int             switch1[2], switch2[2], switch3[2], dip[4];
 
 Led led1, led2;
 
-enum class SwitchPosition {
-    Left,
-    Center,
-    Right
-};
-SwitchPosition getSwitchPosition(bool pswitch[2]) {
-    if (pswitch[0] == true) {
-        return SwitchPosition::Left;
-    } else if (pswitch[1] == true) {
-        return SwitchPosition::Right;
-    } else {
-        return SwitchPosition::Center;
-    }
-}
-
 void updateSwitch1() // left=Volume, center=HPF, right=LPF
 {
-    SwitchPosition position = getSwitchPosition(pswitch1);
+    Funbox::SwitchPosition position = Funbox::GetSwitchPosition(pswitch1);
     switch (position) {
-        case SwitchPosition::Left:
+        case Funbox::SwitchPosition::Left:
             filterMode = FilterMode::Volume;
             break;
-        case SwitchPosition::Center:
+        case Funbox::SwitchPosition::Center:
             filterMode = FilterMode::HPF;
             // Set filter mode to high-pass when switching to HPF
             filterL.SetFilterMode(LadderFilter::FilterMode::HP24);
             filterR.SetFilterMode(LadderFilter::FilterMode::HP24);
             break;
-        case SwitchPosition::Right:
+        case Funbox::SwitchPosition::Right:
             filterMode = FilterMode::LPF;
             // Set filter mode to low-pass when switching to LPF
             filterL.SetFilterMode(LadderFilter::FilterMode::LP24);
@@ -115,13 +100,13 @@ void updateSwitch1() // left=Volume, center=HPF, right=LPF
 
 void updateSwitch2() // left=normal, center=normal, right=inverse
 {
-    inverseDuckingMode = (getSwitchPosition(pswitch2) == SwitchPosition::Right);
+    inverseDuckingMode = (Funbox::GetSwitchPosition(pswitch2) == Funbox::SwitchPosition::Right);
 }
 
 void updateSwitch3() // left=, center=, right=
 {
-    auto position = getSwitchPosition(pswitch3);
-    if (position == SwitchPosition::Left) {
+    auto position = Funbox::GetSwitchPosition(pswitch3);
+    if (position == Funbox::SwitchPosition::Left) {
         eventSource = EventSource::MIDI;
     } else {
         eventSource = EventSource::TapSequence;
